@@ -58,8 +58,8 @@ def compute_code_similarity(model, code1: str, code2: str, device):
     try:
         # TODO: Replace with your actual code_to_graph function that includes AST+CFG+PDG
         # For now using placeholder - you need to implement proper graph creation
-        g1 = placeholder_code_to_graph(code1)
-        g2 = placeholder_code_to_graph(code2)
+        g1 = code_to_graph(code1,0)
+        g2 = code_to_graph(code2,0)
         
         emb1 = get_embedding(model, g1, device)
         emb2 = get_embedding(model, g2, device)
