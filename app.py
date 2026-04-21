@@ -27,7 +27,7 @@ with tab1:
             st.error("Please enter both codes.")
         else:
             with st.spinner("Loading model and computing embeddings..."):
-                model, device = load_gnn_model("models/code_gnn_model.pth")
+                model, device = load_gnn_model()
                 similarity = compute_code_similarity(model, code1, code2, device)
                 
                 if isinstance(similarity, (int, float)):
