@@ -12,8 +12,10 @@ import pickle
 from tree_sitter import Parser
 import tree_sitter_cpp
 
-parser = Parser()
-parser.set_language(tree_sitter_cpp.language())
+
+
+CPP_LANGUAGE = Language(tree_sitter_cpp.language())
+parser = Parser(CPP_LANGUAGE)
 
 # -----------------------------
 # LOAD NODE VOCAB (IMPORTANT)
