@@ -5,6 +5,12 @@ from torch_geometric.data import Data
 from pathlib import Path
 from torch_geometric.nn import SAGEConv, global_mean_pool
 
+
+
+# Initialize parser
+CPP_LANGUAGE = Language(tree_sitter_cpp.language())
+parser = Parser(CPP_LANGUAGE)
+
 class CodeGNN(torch.nn.Module):
     def __init__(self, in_channels=3, hidden_channels=64, out_channels=128):
         super().__init__()
