@@ -1,17 +1,40 @@
-from tree_sitter import Language, Parser
-import tree_sitter_cpp
 import torch
+import torch.nn.functional as F
 from torch_geometric.data import Data
-from pathlib import Path
 from torch_geometric.nn import SAGEConv, global_mean_pool
 from collections import defaultdict
+from pathlib import Path
+import pickle
 
+# -----------------------------
+# TREE-SITTER SETUP
+# -----------------------------
+from tree_sitter import Parser
+import tree_sitter_cpp
 
+parser = Parser()
+parser.set_language(tree_sitter_cpp.language())
 
-# Initialize parser
-CPP_LANGUAGE = Language(tree_sitter_cpp.language())
-parser = Parser(CPP_LANGUAGE)
+# -----------------------------
+# LOAD NODE VOCAB (IMPORTANT)
+# -----------------------------
+BASE_DIR = Path(__file__).resolve().parent.parent
+VOCAB_PATH = BASE_DIR / "models" / "node_vocab.pkl"
 
+if VOCAB_PATH.exists():
+    with open(VOCAB_PATH, "rb") as f:
+        node_vocab = pickle.load(f)
+else:
+    node_vocab = {}  # fallback (not recommended)
+
+def get_node_id(node_type):
+    if node_type not in node_vocab:
+        node_vocab[node_type] = len(node_vocab)
+    return node_vocab[node_type]
+
+# -----------------------------
+# MODEL
+# -----------------------------
 class CodeGNN(torch.nn.Module):
     def __init__(self, in_channels=3, hidden_channels=64, out_channels=128):
         super().__init__()
@@ -33,141 +56,102 @@ class CodeGNN(torch.nn.Module):
 
         x = self.fc(x)
 
-        return torch.nn.functional.normalize(x, p=2, dim=1)
+        return F.normalize(x, p=2, dim=1)
 
+# -----------------------------
+# LOAD MODEL
+# -----------------------------
+def load_gnn_model():
+    device = torch.device("cpu")
 
-def load_gnn_model(model_path="models/code_gnn_model.pth"):
-    device = torch.device('cpu')  # Safe for Streamlit Cloud
-    checkpoint = torch.load(model_path, map_location=device, weights_only=True)
-    
+    model_path = BASE_DIR / "models" / "code_gnn_model.pth"
+    checkpoint = torch.load(model_path, map_location=device)
+
+    config = checkpoint.get("config", {
+        "in_channels": 3,
+        "hidden_channels": 64,
+        "out_channels": 128
+    })
+
     model = CodeGNN(
-        in_channels=checkpoint.get('in_channels', 3),
-        hidden_channels=64,
-        out_channels=checkpoint.get('out_channels', 128)
+        in_channels=config["in_channels"],
+        hidden_channels=config["hidden_channels"],
+        out_channels=config["out_channels"]
     ).to(device)
-    
-    model.load_state_dict(checkpoint['model_state_dict'])
+
+    model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
+
     return model, device
 
+# -----------------------------
+# GRAPH CREATION (AST + CFG + PDG)
+# -----------------------------
+def code_to_graph(code_str, label=0):
 
-def get_embedding(model, graph_data, device):
-    model.eval()
-    with torch.no_grad():
-        graph_data = graph_data.to(device)
-        batch = torch.zeros(graph_data.num_nodes, dtype=torch.long, device=device)
-        emb = model(graph_data.x, graph_data.edge_index, batch)
-        return emb
-
-
-def compute_code_similarity(model, code1: str, code2: str, device):
-    """Compare two C++ codes using CodeGNN"""
-    try:
-        # TODO: Replace with your actual code_to_graph function that includes AST+CFG+PDG
-        # For now using placeholder - you need to implement proper graph creation
-        g1 = code_to_graph(code1,0)
-        g2 = code_to_graph(code2,0)
-        
-        emb1 = get_embedding(model, g1, device)
-        emb2 = get_embedding(model, g2, device)
-        
-        sim = torch.nn.functional.cosine_similarity(emb1, emb2, dim=1).item()
-        return round(sim * 100, 2)
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
-# Placeholder - Replace this with your real tree-sitter based code_to_graph
-
-def code_to_graph(code_str, label):
     tree = parser.parse(bytes(code_str, "utf8"))
-    nodes = []          # list of features [type_id, num_children, is_statement]
-    edges = []          # list of [src, dst]
-    edge_types = []     # 0=AST, 1=Control Flow, 2=Data Dependence
 
-    statement_nodes = []  # (idx, tree_node, text)
-    var_defs = {}         # var_name -> list of definition node indices (simple tracking)
+    nodes = []
+    edges = []
+    edge_types = []
+
+    statement_nodes = []
+    var_defs = defaultdict(list)
     var_uses = defaultdict(list)
 
     def get_text(node):
-     if isinstance(code_str, bytes):          # code_str is the global/outer variable holding the source
-        text = code_str[node.start_byte:node.end_byte].decode("utf-8", errors="ignore")
-     else:
-        text = code_str[node.start_byte:node.end_byte]   # already str, just slice
-     return text
+        return code_str[node.start_byte:node.end_byte]
 
     def traverse(node, parent_idx=None):
         idx = len(nodes)
 
         is_stmt = 1 if node.type in [
-            "if_statement", "for_statement", "while_statement", "do_statement",
+            "if_statement", "for_statement", "while_statement",
             "expression_statement", "return_statement", "compound_statement"
         ] else 0
 
         feature = [get_node_id(node.type), len(node.children), is_stmt]
         nodes.append(feature)
 
+        # AST edges
         if parent_idx is not None:
             edges.append([parent_idx, idx])
-            edge_types.append(0)  # AST edge
+            edge_types.append(0)
             edges.append([idx, parent_idx])
             edge_types.append(0)
 
-        # Track statements for CFG
         if is_stmt:
-            statement_nodes.append((idx, node, get_text(node)))
+            statement_nodes.append((idx, node))
 
-        # Simple data flow tracking (variable defs/uses)
+        # Variable tracking (simplified PDG)
         if node.type == "identifier":
-            var_name = get_text(node).strip()
-            if var_name:
-                # Heuristic: previous assignment = def, else use
-                # In real PDG you'd do proper reaching definitions
-                if parent_idx is not None and "assignment" in str(node.parent.type) if node.parent else False:
-                    var_defs.setdefault(var_name, []).append(idx)
-                else:
-                    var_uses[var_name].append(idx)
+            name = get_text(node).strip()
+            if name:
+                var_uses[name].append(idx)
 
         for child in node.children:
             traverse(child, idx)
 
     traverse(tree.root_node)
 
-    # ==================== Control Flow (CFG) Edges ====================
+    # ---------------- CFG ----------------
     for i in range(len(statement_nodes) - 1):
-        curr_idx, curr_node, _ = statement_nodes[i]
-        next_idx, _, _ = statement_nodes[i + 1]
+        a_idx, a_node = statement_nodes[i]
+        b_idx, _ = statement_nodes[i + 1]
 
-        # Sequential flow
-        edges.append([curr_idx, next_idx])
-        edge_types.append(1)  # Control Flow
-        edges.append([next_idx, curr_idx])
+        edges.append([a_idx, b_idx])
+        edge_types.append(1)
+        edges.append([b_idx, a_idx])
         edge_types.append(1)
 
-        # Branching for if
-        if curr_node.type == "if_statement":
-            for child in curr_node.children:
-                if child.type in ["compound_statement", "expression_statement"]:
-                    edges.append([curr_idx, curr_idx])  # placeholder for branch start
-                    edge_types.append(1)
+    # ---------------- PDG (simple) ----------------
+    for var, uses in var_uses.items():
+        for i in range(len(uses) - 1):
+            edges.append([uses[i], uses[i + 1]])
+            edge_types.append(2)
+            edges.append([uses[i + 1], uses[i]])
+            edge_types.append(2)
 
-        # Loop back-edges
-        if curr_node.type in ["for_statement", "while_statement", "do_statement"]:
-            edges.append([next_idx, curr_idx])
-            edge_types.append(1)
-
-    # ==================== Data Dependence Edges ====================
-    for var_name, defs in var_defs.items():
-        uses = var_uses.get(var_name, [])
-        for d_idx in defs:
-            for u_idx in uses:
-                if u_idx > d_idx:  # forward data flow only
-                    edges.append([d_idx, u_idx])
-                    edge_types.append(2)  # Data Dependence
-                    edges.append([u_idx, d_idx])  # bidirectional for GNN
-                    edge_types.append(2)
-
-    # Build PyG Data
     if len(nodes) < 2:
         return None
 
@@ -175,14 +159,40 @@ def code_to_graph(code_str, label):
 
     if edges:
         edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
-        edge_type = torch.tensor(edge_types, dtype=torch.long)
     else:
         edge_index = torch.empty((2, 0), dtype=torch.long)
-        edge_type = torch.empty((0,), dtype=torch.long)
 
-    data = Data(x=x, edge_index=edge_index, y=torch.tensor([label]))
-    data.edge_type = edge_type  # heterogeneous edge types
-    data.code = code_str
+    data = Data(x=x, edge_index=edge_index)
     data.num_nodes = len(nodes)
 
     return data
+
+# -----------------------------
+# EMBEDDING
+# -----------------------------
+def get_embedding(model, graph, device):
+    with torch.no_grad():
+        graph = graph.to(device)
+        batch = torch.zeros(graph.num_nodes, dtype=torch.long, device=device)
+        return model(graph.x, graph.edge_index, batch)
+
+# -----------------------------
+# SIMILARITY
+# -----------------------------
+def compute_code_similarity(model, code1, code2, device):
+    try:
+        g1 = code_to_graph(code1)
+        g2 = code_to_graph(code2)
+
+        if g1 is None or g2 is None:
+            return "Error: Invalid code input"
+
+        emb1 = get_embedding(model, g1, device)
+        emb2 = get_embedding(model, g2, device)
+
+        sim = F.cosine_similarity(emb1, emb2).item()
+
+        return round(sim * 100, 2)
+
+    except Exception as e:
+        return f"Error: {str(e)}"
