@@ -1,0 +1,8 @@
+streamlit
+torch
+torch-geometric
+pandas
+plotly
+pdfplumber
+python-docx
+copydetect
