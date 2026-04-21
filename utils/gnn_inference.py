@@ -155,7 +155,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = CodeGNN().to(device)
 
 
-def load_weights(path: str = "code_gnn_model.pth") -> None:
+def load_weights(path: str = "models/code_gnn_model.pth") -> None:
     state_dict = torch.load(path, map_location=device)
     model.load_state_dict(state_dict)
     model.eval()
