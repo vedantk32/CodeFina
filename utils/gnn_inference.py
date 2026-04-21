@@ -9,7 +9,7 @@ import pickle
 # -----------------------------
 # TREE-SITTER SETUP
 # -----------------------------
-from tree_sitter import Parser
+from tree_sitter import Language,Parser
 import tree_sitter_cpp
 
 
