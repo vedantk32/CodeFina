@@ -3,12 +3,15 @@ import torch.nn.functional as F
 from torch_geometric.nn import SAGEConv, global_mean_pool
 from torch_geometric.data import Data
 
-# Import your real code_to_graph function
+# === FIXED IMPORT ===
 try:
-    from .code_to_graph import code_to_graph
+    from utils.code_to_graph import code_to_graph     # Absolute import (more reliable)
 except ImportError:
-    # Fallback if import fails during initial deployment
-    code_to_graph = None
+    try:
+        from .code_to_graph import code_to_graph      # Relative import fallback
+    except ImportError:
+        code_to_graph = None
+        print("Warning: Could not import code_to_graph")
 
 class CodeGNN(torch.nn.Module):
     def __init__(self, in_channels=3, hidden_channels=64, out_channels=128):
@@ -35,7 +38,7 @@ def load_gnn_model(model_path="models/code_gnn_model.pth"):
     try:
         checkpoint = torch.load(model_path, map_location=device, weights_only=True)
     except FileNotFoundError:
-        raise FileNotFoundError(f"Model file not found: {model_path}. Please upload the model to the 'models/' folder.")
+        raise FileNotFoundError(f"Model file not found: {model_path}")
 
     model = CodeGNN(
         in_channels=checkpoint.get('in_channels', 3),
@@ -46,15 +49,15 @@ def load_gnn_model(model_path="models/code_gnn_model.pth"):
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
-    print(f"✅ CodeGNN model loaded successfully from {model_path}")
+    print(f"✅ CodeGNN model loaded successfully!")
     return model, device
 
 
 def compute_code_similarity(model, code1: str, code2: str, device):
     """Compare two C++ codes using CodeGNN"""
     if code_to_graph is None:
-        return "Error: code_to_graph function not available"
-    
+        return "Error: code_to_graph function not found. Check file structure."
+
     try:
         g1 = code_to_graph(code1, label=0)
         g2 = code_to_graph(code2, label=0)
@@ -62,7 +65,6 @@ def compute_code_similarity(model, code1: str, code2: str, device):
         if g1 is None or g2 is None:
             return "Error: Could not parse one or both code snippets"
         
-        # Get embeddings
         emb1 = get_embedding(model, g1, device)
         emb2 = get_embedding(model, g2, device)
         
@@ -74,7 +76,6 @@ def compute_code_similarity(model, code1: str, code2: str, device):
 
 
 def get_embedding(model, graph_data, device):
-    """Helper to get graph embedding"""
     model.eval()
     with torch.no_grad():
         graph_data = graph_data.to(device)
