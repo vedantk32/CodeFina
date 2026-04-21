@@ -1,29 +1,70 @@
-import torch
-import torch.nn.functional as F
-from torch_geometric.nn import SAGEConv, global_mean_pool
-from torch_geometric.data import Data
-
 from tree_sitter import Language, Parser
 import tree_sitter_cpp
+import torch
+from torch_geometric.data import Data
+from pathlib import Path
+
+class CodeGNN(torch.nn.Module):
+    def __init__(self, in_channels=3, hidden_channels=64, out_channels=128):
+        super().__init__()
+        self.conv1 = torch_geometric.nn.SAGEConv(in_channels, hidden_channels)
+        self.conv2 = torch_geometric.nn.SAGEConv(hidden_channels, hidden_channels)
+        self.conv3 = torch_geometric.nn.SAGEConv(hidden_channels, hidden_channels)
+        self.conv4 = torch_geometric.nn.SAGEConv(hidden_channels, hidden_channels)
+        self.fc = torch.nn.Linear(hidden_channels, out_channels)
+
+    def forward(self, x, edge_index, batch):
+        x = self.conv1(x, edge_index).relu()
+        x = self.conv2(x, edge_index).relu()
+        x = self.conv3(x, edge_index).relu()
+        x = self.conv4(x, edge_index).relu()
+        x = torch_geometric.nn.global_mean_pool(x, batch)
+        x = self.fc(x)
+        return torch.nn.functional.normalize(x, p=2, dim=1)
 
 
-# ----- Parser setup -----
-
-CPP_LANGUAGE = Language(tree_sitter_cpp.language())
-parser = Parser(CPP_LANGUAGE)
-
-
-# ----- Node vocabulary -----
-
-node_vocab = {}
-
-
-def get_node_id(node_type: str) -> int:
-    if node_type not in node_vocab:
-        node_vocab[node_type] = len(node_vocab)
-    return node_vocab[node_type]
+def load_gnn_model(model_path="models/code_gnn_model.pth"):
+    device = torch.device('cpu')  # Safe for Streamlit Cloud
+    checkpoint = torch.load(model_path, map_location=device, weights_only=True)
+    
+    model = CodeGNN(
+        in_channels=checkpoint.get('in_channels', 3),
+        hidden_channels=64,
+        out_channels=checkpoint.get('out_channels', 128)
+    ).to(device)
+    
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+    return model, device
 
 
+def get_embedding(model, graph_data, device):
+    model.eval()
+    with torch.no_grad():
+        graph_data = graph_data.to(device)
+        batch = torch.zeros(graph_data.num_nodes, dtype=torch.long, device=device)
+        emb = model(graph_data.x, graph_data.edge_index, batch)
+        return emb
+
+
+def compute_code_similarity(model, code1: str, code2: str, device):
+    """Compare two C++ codes using CodeGNN"""
+    try:
+        # TODO: Replace with your actual code_to_graph function that includes AST+CFG+PDG
+        # For now using placeholder - you need to implement proper graph creation
+        g1 = placeholder_code_to_graph(code1)
+        g2 = placeholder_code_to_graph(code2)
+        
+        emb1 = get_embedding(model, g1, device)
+        emb2 = get_embedding(model, g2, device)
+        
+        sim = torch.nn.functional.cosine_similarity(emb1, emb2, dim=1).item()
+        return round(sim * 100, 2)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+# Placeholder - Replace this with your real tree-sitter based code_to_graph
 
 def code_to_graph(code_str, label):
     tree = parser.parse(bytes(code_str, "utf8"))
@@ -132,59 +173,3 @@ def code_to_graph(code_str, label):
     data.num_nodes = len(nodes)
 
     return data
-class CodeGNN(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.conv1 = SAGEConv(2, 64)
-        self.conv2 = SAGEConv(64, 64)
-        self.conv3 = SAGEConv(64, 64)
-        self.conv4 = SAGEConv(64, 64)
-        self.fc = torch.nn.Linear(64, 64)
-
-    def forward(self, x, edge_index, batch):
-        x = self.conv1(x, edge_index).relu()
-        x = self.conv2(x, edge_index).relu()
-        x = self.conv3(x, edge_index).relu()
-        x = self.conv4(x, edge_index).relu()
-        x = global_mean_pool(x, batch)
-        x = self.fc(x)
-        return F.normalize(x, p=2, dim=1)
-
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = CodeGNN().to(device)
-
-
-def load_weights(path: str = "models/code_gnn_model.pth") -> None:
-    state_dict = torch.load(path, map_location=device)
-    model.load_state_dict(state_dict)
-    model.eval()
-
-
-def compare_programs(code1: str, code2: str) -> str:
-    if not code1.strip() or not code2.strip():
-        return "Please provide both code snippets."
-
-    g1 = code_to_graph(code1, 0)
-    g2 = code_to_graph(code2, 0)
-
-    if g1 is None or g2 is None:
-        return "Error parsing code into graphs. Try with more complete code."
-
-    with torch.no_grad():
-        b1 = torch.zeros(g1.num_nodes, dtype=torch.long).to(device)
-        b2 = torch.zeros(g2.num_nodes, dtype=torch.long).to(device)
-
-        e1 = model(g1.x.to(device), g1.edge_index.to(device), b1)
-        e2 = model(g2.x.to(device), g2.edge_index.to(device), b2)
-
-        sim = F.cosine_similarity(e1, e2).item()
-
-    if sim >= 0.90:
-        verdict = "Programs are SIMILAR"
-    elif 0.75 < sim < 0.90:
-        verdict = "Programs are POSSIBLY similar"
-    else:
-        verdict = "Programs are DISSIMILAR"
-
-    return f"Similarity Score: {sim:.4f}\nPrediction: {verdict}"
