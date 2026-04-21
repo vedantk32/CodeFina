@@ -3,14 +3,17 @@ import tree_sitter_cpp
 import torch
 from torch_geometric.data import Data
 from pathlib import Path
+from torch_geometric.nn import SAGEConv, global_mean_pool
 
 class CodeGNN(torch.nn.Module):
     def __init__(self, in_channels=3, hidden_channels=64, out_channels=128):
         super().__init__()
-        self.conv1 = torch_geometric.nn.SAGEConv(in_channels, hidden_channels)
-        self.conv2 = torch_geometric.nn.SAGEConv(hidden_channels, hidden_channels)
-        self.conv3 = torch_geometric.nn.SAGEConv(hidden_channels, hidden_channels)
-        self.conv4 = torch_geometric.nn.SAGEConv(hidden_channels, hidden_channels)
+
+        self.conv1 = SAGEConv(in_channels, hidden_channels)
+        self.conv2 = SAGEConv(hidden_channels, hidden_channels)
+        self.conv3 = SAGEConv(hidden_channels, hidden_channels)
+        self.conv4 = SAGEConv(hidden_channels, hidden_channels)
+
         self.fc = torch.nn.Linear(hidden_channels, out_channels)
 
     def forward(self, x, edge_index, batch):
@@ -18,8 +21,11 @@ class CodeGNN(torch.nn.Module):
         x = self.conv2(x, edge_index).relu()
         x = self.conv3(x, edge_index).relu()
         x = self.conv4(x, edge_index).relu()
-        x = torch_geometric.nn.global_mean_pool(x, batch)
+
+        x = global_mean_pool(x, batch)
+
         x = self.fc(x)
+
         return torch.nn.functional.normalize(x, p=2, dim=1)
 
 
