@@ -4,6 +4,7 @@ import torch
 from torch_geometric.data import Data
 from pathlib import Path
 from torch_geometric.nn import SAGEConv, global_mean_pool
+from collections import defaultdict
 
 
 
